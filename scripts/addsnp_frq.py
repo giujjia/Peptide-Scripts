@@ -1,7 +1,17 @@
 import sys
 import re
+import os
 from collections import defaultdict
 from Mutacao import Mutacao
+
+
+def resolve_output_path(category, path_value):
+    if os.path.dirname(path_value):
+        out_path = path_value
+    else:
+        out_path = os.path.join("output", category, path_value)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    return out_path
 
 def process_protein_file(dbproteinas):
     hash_proteinas = {}
@@ -240,6 +250,9 @@ def main():
         sys.exit(1)
 
     dbproteinas, dbmutacao, dbsaida, dbpepmutref, dbfinal = sys.argv[1:6]
+    dbsaida = resolve_output_path("snp", dbsaida)
+    dbpepmutref = resolve_output_path("snp", dbpepmutref)
+    dbfinal = resolve_output_path("snp", dbfinal)
 
     with open(dbsaida, "w") as dbsaida, \
          open(dbpepmutref, "w") as dbrelacao, \

@@ -1,11 +1,24 @@
 import sys
 import re
+import os
+
+
+def resolve_output_path(category, path_value):
+    if os.path.dirname(path_value):
+        out_path = path_value
+    else:
+        out_path = os.path.join("output", category, path_value)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    return out_path
 
 if len(sys.argv) != 5:
     print("Uso: python script.py <proteinas> <mutacao> <dbsaida> <dbpepmutref>")
     sys.exit(1)
 
 proteinas, mutacao, dbsaida, dbpepmutref = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+dbsaida = resolve_output_path("snp", dbsaida)
+dbpepmutref = resolve_output_path("snp", dbpepmutref)
+dbfinal = resolve_output_path("snp", "dbf.txt")
 
 # Definindo o dicionário de aminoácidos
 amino = {
@@ -24,7 +37,7 @@ try:
          open(mutacao, 'r') as DBSNP, \
          open(dbsaida, 'w') as DBSAIDA, \
          open(dbpepmutref, 'w') as DBRELACAO, \
-         open('dbf.txt', 'w') as DBFINAL: 
+         open(dbfinal, 'w') as DBFINAL: 
 
         # Processando o arquivo de proteínas
         for lin in PROTEINAS:

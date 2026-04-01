@@ -1,5 +1,15 @@
 import sys
 import re
+import os
+
+
+def resolve_output_path(category, path_value):
+    if os.path.dirname(path_value):
+        out_path = path_value
+    else:
+        out_path = os.path.join("output", category, path_value)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    return out_path
 
 amino_hash = {
     "Ala": "a", "Arg": "r", "Asn": "n", "Asp": "d", "Cys": "c", "Gln": "q",
@@ -310,13 +320,15 @@ def process_mutation(hash_proteinas, mutacao, dbsaida, dbpepmutref, dbfinal):
     except FileNotFoundError as e:
         print(f"Erro: {e}")
         
-
 def main():
     if len(sys.argv) != 6:
         print("Uso: python script.py <arquivo_proteinas> <arquivo_mutacao> <arquivo_saida> <arquivo_relacao> <arquivo_final>")
         sys.exit(1)
 
     proteinas, mutacao, dbsaida, dbpepmutref, dbfinal= sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+    dbsaida = resolve_output_path("indel", dbsaida)
+    dbpepmutref = resolve_output_path("indel", dbpepmutref)
+    dbfinal = resolve_output_path("indel", dbfinal)
 
     hash_proteinas = processar_proteinas(proteinas)
     process_mutation(hash_proteinas, mutacao, dbsaida, dbpepmutref, dbfinal)

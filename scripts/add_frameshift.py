@@ -1,4 +1,14 @@
 import sys
+import os
+
+
+def resolve_output_path(category, path_value):
+    if os.path.dirname(path_value):
+        out_path = path_value
+    else:
+        out_path = os.path.join("output", category, path_value)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    return out_path
 
 if len(sys.argv) < 4:
     print("Uso: python script.py <dbSNP> <transcritos> <saida>")
@@ -7,6 +17,7 @@ if len(sys.argv) < 4:
 arqentrada = sys.argv[1]
 arqentrada2 = sys.argv[2]  
 arqtmp = sys.argv[3]
+arqtmp = resolve_output_path("frameshift", arqtmp)
 
 try:
     entrada = open(arqentrada, 'r')
@@ -40,7 +51,7 @@ for lin in entrada2:
     
     if lin.startswith('>'):
         # Linha de cabeçalho FASTA
-        lin = lin[1:]  # Remove o '>' do início
+        lin = lin[1:]  # Remove o > do início
         head = lin.split('|')
         
         if len(head) >= 3:  # Verifica se tem campos suficientes
@@ -53,7 +64,7 @@ for lin in entrada2:
             # Inicializa entrada no dicionário de sequências
             seq_transcrits[id_nm] = ""
     else:
-        # CORREÇÃO: Concatena as linhas de sequência
+        # Concatena as linhas de sequência
         if id_nm is not None and id_nm in seq_transcrits:
             seq_transcrits[id_nm] += lin
 
@@ -92,7 +103,6 @@ for lin in entrada:
         sequence = None
         
         if indel in ["ins", "dup"]:
-            # CORREÇÃO: Verifica índices
             if len(linhas) < 4:
                 continue
             insertion = linhas[2]
@@ -110,8 +120,7 @@ for lin in entrada:
                 sequence = seq_transcrits[chave_nm]  # Mantém original se posição inválida
             
         else:
-            # Lógica para deleções - precisa ser revisada com cuidado
-            # pois os índices no Perl são complexos
+            # Lógica para deleções
             if len(linhas) < 6:
                 continue
                 
@@ -153,7 +162,7 @@ for lin in entrada:
             
             # Traduz a sequência mutada
             protein_sequence = ""
-            for i in range(orf, len(sequence) - 2, 3):  # -2 para não acessar além do fim
+            for i in range(orf, len(sequence) - 2, 3):  
                 codon = sequence[i:i+3].upper()
                 
                 if codon in aminoacids:
