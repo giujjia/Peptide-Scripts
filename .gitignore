@@ -5,3 +5,7 @@ perl/
 tmp/
 *.bcp
 __pycache__
+
+*.log
+venv/
+data/
