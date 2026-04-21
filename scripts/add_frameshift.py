@@ -1,33 +1,12 @@
+import re
 import sys
 import os
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from utils import load_nm_cds_positions, strip_version
 
-def resolve_output_path(category, path_value):
-    if os.path.dirname(path_value):
-        out_path = path_value
-    else:
-        out_path = os.path.join("output", category, path_value)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    return out_path
-
-if len(sys.argv) < 4:
-    print("Uso: python script.py <dbSNP> <transcritos> <saida>")
-    sys.exit(1)
-
-arqentrada = sys.argv[1]
-arqentrada2 = sys.argv[2]  
-arqtmp = sys.argv[3]
-arqtmp = resolve_output_path("frameshift", arqtmp)
-
-try:
-    entrada = open(arqentrada, 'r')
-    entrada2 = open(arqentrada2, 'r')
-    saida = open(arqtmp, 'w')
-except FileNotFoundError as e:
-    print(f"Arquivo nao encontrado: {e}")
-    sys.exit(1)
-
-aminoacids = {
+CODON_TABLE = {
     "TTT": "F", "TTC": "F", "TTA": "L", "TTG": "L", "CTT": "L", "CTC": "L", 
     "CTA": "L", "CTG": "L", "ATT": "I", "ATC": "I", "ATA": "I", "ATG": "M",
     "GTT": "V", "GTC": "V", "GTA": "V", "GTG": "V", "TCT": "S", "TCC": "S",
@@ -41,137 +20,182 @@ aminoacids = {
     "GGG": "G", "TAA": "STOP", "TAG": "STOP", "TGA": "STOP"
 }
 
-seq_transcrits = {}
-orfs = {}
-id_nm = None
+RE_DELINS    = re.compile(r"^c\.(\d+)_(\d+)del([ACGTN]+)ins([ACGTN]+)$", re.IGNORECASE)
+RE_INS       = re.compile(r"^c\.(\d+)_(\d+)ins([ACGTN]+)$", re.IGNORECASE)
+RE_DEL_RANGE = re.compile(r"^c\.(\d+)_(\d+)del([ACGTN]+)?$", re.IGNORECASE)
+RE_DEL_SINGLE = re.compile(r"^c\.(\d+)del([ACGTN]+)?$", re.IGNORECASE)
+RE_DUP       = re.compile(r"^c\.(\d+)_(\d+)dup([ACGTN]+)$", re.IGNORECASE)
 
+def parse_hgvs(hgvs: str):
+    """Interpreta HGVS de indel e retorna cds_pos, del_len, ins_seq ou None"""
+    m = RE_DELINS.match(hgvs)
+    if m:
+        pos1 = int(m.group(1))
+        del_seq = m.group(3).upper()
+        ins_seq = m.group(4).upper()
+        return pos1, len(del_seq), ins_seq
 
-for lin in entrada2:
-    lin = lin.strip().replace('\r', '')
-    
-    if lin.startswith('>'):
-        # Linha de cabeçalho FASTA
-        lin = lin[1:]  # Remove o > do início
-        head = lin.split('|')
-        
-        if len(head) >= 3:  # Verifica se tem campos suficientes
-            id_nm = head[0]
-            id_np = head[1]
-            
-            # Armazena informações do ORF
-            orfs[id_nm] = f"{id_np}\t{head[2]}"
-            
-            # Inicializa entrada no dicionário de sequências
-            seq_transcrits[id_nm] = ""
+    m = RE_DUP.match(hgvs)
+    if m:
+        pos2 = int(m.group(2))
+        dup_seq = m.group(3).upper()
+        return pos2, 0, dup_seq
+
+    m = RE_INS.match(hgvs)
+    if m:
+        pos1 = int(m.group(1))
+        ins_seq = m.group(3).upper()
+        return pos1, 0, ins_seq
+
+    m = RE_DEL_RANGE.match(hgvs)
+    if m:
+        pos1 = int(m.group(1))
+        pos2 = int(m.group(2))
+        del_seq = (m.group(3) or "").upper()
+        del_len = len(del_seq) if del_seq else abs(pos2 - pos1) + 1
+        return pos1, del_len, ""
+
+    m = RE_DEL_SINGLE.match(hgvs)
+    if m:
+        pos1 = int(m.group(1))
+        del_seq = (m.group(2) or "").upper()
+        del_len = len(del_seq) if del_seq else 1
+        return pos1, del_len, ""
+
+    return None
+
+def apply_indel(nucleotides: str, orf: int, cds_pos: int, del_len: int, ins_seq: str) -> str:
+    """Aplica indel no transcript, cds_pos 1-based relativo ao inicio do CDS"""
+    abs_pos = orf + cds_pos - 1  # 0-based absolute position in transcript
+    seqs = list(nucleotides)
+    seqs[abs_pos:abs_pos + del_len] = list(ins_seq)
+    return "".join(seqs)
+
+def resolve_output_path(category, path_value):
+    if os.path.dirname(path_value):
+        out_path = path_value
     else:
-        # Concatena as linhas de sequência
-        if id_nm is not None and id_nm in seq_transcrits:
-            seq_transcrits[id_nm] += lin
+        out_path = os.path.join("output", category, path_value)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    return out_path
 
-# Fecha o arquivo após leitura
-entrada2.close()
+def main():
+    if len(sys.argv) not in (4, 5, 6):
+        print("Uso: python add_frameshift.py <frameshift_nm.txt> <transcritos> <saida> [saida_inframe] [saida_ext]")
+        sys.exit(1)
 
-# Processa as variações
-for lin in entrada:
-    lin = lin.strip().replace('\r', '')
-    if not lin:  # Pula linhas vazias
-        continue
-        
-    linhas = lin.split('\t')
-    
-    if len(linhas) < 6:  # Verifica número mínimo de colunas
-        continue
-    
-    chave_nm = linhas[0]
-    indel = linhas[1]
-    snp = linhas[-1]  # Último elemento
-    
-    if chave_nm not in orfs or chave_nm not in seq_transcrits:
-        continue
-        
-    vet = orfs[chave_nm].split('\t')
-    if len(vet) < 2:
-        continue
-        
-    chave_np = vet[0]
+    frameshift_nm, transcritos, saida = sys.argv[1:4]
+    saida_inframe = sys.argv[4] if len(sys.argv) >= 5 else None
+    saida_ext = sys.argv[5] if len(sys.argv) == 6 else None
+    saida = resolve_output_path("frameshift", saida)
+    if saida_inframe:
+        saida_inframe = resolve_output_path("frameshift", saida_inframe)
+    if saida_ext:
+        saida_ext = resolve_output_path("frameshift", saida_ext)
+
+    nm_cds = load_nm_cds_positions(Path("data/nm_cds_positions.tsv"))
+
+    transcripts_dict = {}
+    current_nm = None
+
     try:
-        orf = int(vet[1])
-    except ValueError:
-        continue
-    
-    if orf > 0:
-        sequence = None
-        
-        if indel in ["ins", "dup"]:
-            if len(linhas) < 4:
-                continue
-            insertion = linhas[2]
-            try:
-                position = int(linhas[3]) + orf
-            except ValueError:
-                continue
-            
-            seqs = list(seq_transcrits[chave_nm])
-            # Insere a mutação
-            if position <= len(seqs):
-                seqs[position:position] = list(insertion)
-                sequence = "".join(seqs)
-            else:
-                sequence = seq_transcrits[chave_nm]  # Mantém original se posição inválida
-            
-        else:
-            # Lógica para deleções
-            if len(linhas) < 6:
-                continue
-                
-            var = linhas[3]
-            position = orf
-            insertion = ""
-            num_del = 0
-            
-            try:
-                if var == "ins":
-                    position += int(linhas[5])
-                    insertion = linhas[4]
+        inframe_file = open(saida_inframe, "w") if saida_inframe else None
+        ext_file = open(saida_ext, "w") if saida_ext else None
+        with open(transcritos, "r") as transcripts_file:
+            for line in transcripts_file:
+                line = line.strip().replace('\r', '')
+                if not line:
+                    continue
+                if line.startswith('>'):
+                    header = line[1:].split()
+                    if header:
+                        current_nm = strip_version(header[0])
+                        if current_nm not in transcripts_dict:
+                            transcripts_dict[current_nm] = ""
                 else:
-                    position += int(linhas[3])
-                    
-                # Determina número de bases a deletar
-                if linhas[2].isdigit():
-                    num_del = int(linhas[2])
-                else:
-                    num_del = len(linhas[2])
-                    
-                seqs = list(seq_transcrits[chave_nm])
-                # Remove e insere (splice)
-                start_pos = max(0, position-1)
-                end_pos = start_pos + num_del
-                
-                if start_pos < len(seqs):
-                    seqs[start_pos:end_pos] = list(insertion)
-                    sequence = "".join(seqs)
-                else:
-                    sequence = seq_transcrits[chave_nm]
-                    
-            except (ValueError, IndexError):
-                sequence = seq_transcrits[chave_nm]
-        
-        # Escreve apenas se a sequence foi modificada
-        if sequence:
-            saida.write(f">{chave_np}|{snp}\n")
-            
-            # Traduz a sequência mutada
-            protein_sequence = ""
-            for i in range(orf, len(sequence) - 2, 3):  
-                codon = sequence[i:i+3].upper()
-                
-                if codon in aminoacids:
-                    if aminoacids[codon] == "STOP":
-                        break
-                    protein_sequence += aminoacids[codon]
-                    
-            saida.write(protein_sequence + "\n")
+                    if current_nm is not None:
+                        transcripts_dict[current_nm] += line
 
-# Fecha os arquivos
-entrada.close()
-saida.close()
+        with open(frameshift_nm, "r") as src, open(saida, "w") as dst:
+            for raw in src:
+                line = raw.strip().replace('\r', '')
+                if not line:
+                    continue
+
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                left = parts[0]
+                var_id = parts[1]
+                if ":" not in left or not left.startswith("NM_"):
+                    continue
+
+                nm_versioned, hgvs = left.split(":", 1)
+                nm_id = strip_version(nm_versioned)
+                rs_id = f"rs{var_id}"
+
+                parsed = parse_hgvs(hgvs)
+                if parsed is None:
+                    continue
+
+                cds_pos, del_len, ins_seq = parsed
+                is_inframe = (len(ins_seq) - del_len) % 3 == 0
+
+                if is_inframe and not inframe_file:
+                    continue
+
+                if nm_id not in transcripts_dict or nm_id not in nm_cds:
+                    continue
+
+                np_id, cds_start, cds_end = nm_cds[nm_id]
+                orf = cds_start - 1
+                ref_protein_len = (cds_end - cds_start) // 3
+
+                if orf <= 0:
+                    continue
+
+                sequence = apply_indel(transcripts_dict[nm_id], orf, cds_pos, del_len, ins_seq)
+
+                if not sequence:
+                    continue
+
+                protein = ""
+                for i in range(orf, len(sequence) - 2, 3):
+                    codon = sequence[i:i+3].upper()
+                    if codon in CODON_TABLE:
+                        if CODON_TABLE[codon] == "STOP":
+                            break
+                        protein += CODON_TABLE[codon]
+                    else:
+                        break
+
+                # extensao por frameshift proteina mutada mais longa que a referencia
+                is_ext = (not is_inframe) and ext_file and (len(protein) > ref_protein_len)
+
+                if is_inframe:
+                    dst_file = inframe_file
+                elif is_ext:
+                    dst_file = ext_file
+                else:
+                    dst_file = dst
+
+                if dst_file is None:
+                    continue
+
+                dst_file.write(f">{np_id}|{rs_id}\n")
+                dst_file.write(protein + "\n")
+
+    except FileNotFoundError as e:
+        print(f"Arquivo nao encontrado: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Erro: {e}")
+        sys.exit(1)
+    finally:
+        if inframe_file:
+            inframe_file.close()
+        if ext_file:
+            ext_file.close()
+
+if __name__ == "__main__":
+    main()
